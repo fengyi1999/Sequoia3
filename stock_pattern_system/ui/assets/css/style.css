@@ -1,0 +1,126 @@
+/* 侧边栏样式 */
+.sidebar {
+    position: relative;
+    height: calc(100vh - 120px);
+    background-color: #f8f9fa;
+    transition: all 0.3s ease;
+    border-right: 1px solid #dee2e6;
+    overflow-y: auto;
+    z-index: 1000;
+}
+
+/* 侧边栏折叠状态 */
+.sidebar.collapsed {
+    width: 60px !important;
+    padding-left: 0.5rem !important;
+    padding-right: 0.5rem !important;
+}
+
+/* 侧边栏切换按钮 */
+.sidebar-toggle {
+    position: absolute;
+    right: 10px;
+    top: 10px;
+    cursor: pointer;
+    z-index: 1001;
+}
+
+/* 侧边栏标题 */
+.sidebar-header {
+    margin-bottom: 0;
+    padding-top: 0.5rem;
+    font-size: 1.3rem;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+/* 侧边栏项目文本 */
+.sidebar.collapsed .nav-text {
+    display: none;
+}
+
+/* 侧边栏状态信息 */
+.sidebar.collapsed .status-info {
+    display: none;
+}
+
+/* 卡片样式 */
+.card {
+    border-radius: 0.5rem;
+    box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+    margin-bottom: 1rem;
+    height: 100%;
+}
+
+/* 卡片标题 */
+.card-title {
+    margin-bottom: 0;
+    font-size: 1.2rem;
+}
+
+/* 内容区域样式 */
+.content-area {
+    padding: 0 1rem;
+    transition: all 0.3s ease;
+}
+
+/* 表格行悬停效果 */
+.dash-table-container .dash-spreadsheet-container .dash-spreadsheet-inner tr:hover {
+    background-color: rgba(0, 123, 255, 0.1) !important;
+}
+
+/* 表格行选中效果 */
+.dash-table-container .dash-spreadsheet-container .dash-spreadsheet-inner tr.selected {
+    background-color: rgba(0, 123, 255, 0.2) !important;
+}
+
+/* 响应式布局调整 */
+@media (max-width: 992px) {
+    .sidebar.collapsed {
+        width: 0 !important;
+        padding: 0 !important;
+        margin: 0 !important;
+    }
+    
+    .sidebar-col {
+        transition: all 0.3s ease;
+    }
+}
+
+/* 形态匹配页面样式 */
+.pattern-matching-container {
+    display: flex;
+    flex-direction: column;
+    height: calc(100vh - 150px);
+}
+
+/* 美化滑块样式 */
+.rc-slider-track {
+    background-color: #007bff;
+}
+
+.rc-slider-handle {
+    border-color: #007bff;
+}
+
+.rc-slider-handle:hover {
+    border-color: #0056b3;
+}
+
+.rc-slider-handle:active {
+    border-color: #0056b3;
+    box-shadow: 0 0 5px #0056b3;
+}
+
+/* Plotly图表样式 */
+.js-plotly-plot .plotly .main-svg {
+    border-radius: 0.25rem;
+}
+
+/* 匹配结果表格样式 */
+#matching-results-table {
+    height: calc(100% - 60px);
+    overflow-y: auto;
+    border-radius: 0.25rem;
+} 
