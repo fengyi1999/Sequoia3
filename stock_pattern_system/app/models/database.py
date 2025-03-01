@@ -24,6 +24,74 @@ class Database:
             
         self.db_path = db_path
         
+        # 初始化数据库表
+        self.init_database()
+        
+    def init_database(self):
+        """
+        初始化数据库表结构
+        """
+        try:
+            # 股票基本信息表
+            create_stocks_table_sql = """
+            CREATE TABLE IF NOT EXISTS stocks (
+                stock_code TEXT PRIMARY KEY,
+                stock_name TEXT NOT NULL,
+                listing_date TEXT,
+                market_type TEXT,
+                is_active INTEGER DEFAULT 1,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+            
+            # 股票日线数据表
+            create_daily_data_table_sql = """
+            CREATE TABLE IF NOT EXISTS daily_data (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                stock_code TEXT NOT NULL,
+                trade_date TEXT NOT NULL,
+                open REAL,
+                high REAL,
+                low REAL,
+                close REAL,
+                volume REAL,
+                amount REAL,
+                ma5 REAL,
+                ma10 REAL,
+                ma20 REAL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(stock_code, trade_date)
+            )
+            """
+            
+            # 形态模板表
+            create_patterns_table_sql = """
+            CREATE TABLE IF NOT EXISTS patterns (
+                pattern_id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                description TEXT,
+                data TEXT NOT NULL,
+                pattern_type TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+            
+            # 创建表
+            with self.get_cursor() as cursor:
+                cursor.execute(create_stocks_table_sql)
+                cursor.execute(create_daily_data_table_sql)
+                cursor.execute(create_patterns_table_sql)
+                
+            print("数据库表初始化成功")
+            return True
+        except Exception as e:
+            import traceback
+            print(f"初始化数据库表失败: {e}")
+            print(traceback.format_exc())
+            return False
+    
     @contextmanager
     def get_connection(self):
         """
@@ -126,11 +194,22 @@ class Database:
         Returns:
             pandas.DataFrame: 查询结果DataFrame
         """
-        with self.get_connection() as conn:
-            if params:
-                return pd.read_sql_query(query, conn, params=params)
-            else:
-                return pd.read_sql_query(query, conn)
+        try:
+            with self.get_connection() as conn:
+                if params:
+                    return pd.read_sql_query(query, conn, params=params)
+                else:
+                    return pd.read_sql_query(query, conn)
+        except Exception as e:
+            # 记录详细错误
+            import traceback
+            print(f"SQL查询失败: {str(e)}")
+            print(f"SQL语句: {query}")
+            print(f"参数: {params}")
+            print(f"错误详情: {traceback.format_exc()}")
+            
+            # 返回空的DataFrame
+            return pd.DataFrame()
     
     def table_exists(self, table_name):
         """

@@ -35,6 +35,52 @@ MARKET_TYPES = {
     "300": "创业板",  # 创业板
 }
 
+def get_local_stock_data(stock_code, start_date=None, end_date=None):
+    """
+    从本地数据库获取股票历史数据
+    
+    Args:
+        stock_code (str): 股票代码
+        start_date (str, optional): 开始日期，格式为YYYY-MM-DD
+        end_date (str, optional): 结束日期，格式为YYYY-MM-DD
+        
+    Returns:
+        pd.DataFrame: 股票历史数据
+    """
+    try:
+        # 初始化数据库连接
+        db = Database()
+        conn = db.get_connection()
+        
+        # 构建SQL查询
+        query = "SELECT * FROM daily_data WHERE stock_code = ?"
+        params = [stock_code]
+        
+        # 添加日期过滤条件
+        if start_date:
+            query += " AND trade_date >= ?"
+            params.append(start_date)
+        if end_date:
+            query += " AND trade_date <= ?"
+            params.append(end_date)
+        
+        query += " ORDER BY trade_date"
+        
+        # 执行查询
+        print(f"执行SQL查询: {query}")
+        print(f"查询参数: {params}")
+        
+        # 读取数据到DataFrame
+        df = pd.read_sql_query(query, conn, params=params)
+        
+        # 关闭连接
+        conn.close()
+        
+        return df
+    except Exception as e:
+        print(f"获取本地股票 {stock_code} 数据失败: {e}")
+        return pd.DataFrame()
+
 def get_market_type(stock_code):
     """
     根据股票代码判断市场类型
@@ -256,6 +302,173 @@ def fetch_and_save_stock_data(days=90, retry_times=3, sleep_time=1):
         print(f"获取股票数据过程发生错误: {e}")
         traceback.print_exc()
         return (0, 0)
+
+def init_single_stock_data(stock_code, days=60, retry_times=3, force_update=False):
+    """初始化单个股票的历史数据
+    
+    Args:
+        stock_code (str): 股票代码
+        days (int, optional): 获取的天数. Defaults to 60.
+        retry_times (int, optional): 重试次数. Defaults to 3.
+        force_update (bool, optional): 是否强制更新. Defaults to False.
+        
+    Returns:
+        bool: 是否成功
+    """
+    # 导入matcher_service，用于检查最近交易日
+    from stock_pattern_system.ui.pages.pattern_matching import matcher_service
+    
+    try:
+        print(f"执行SQL查询: SELECT * FROM daily_data WHERE stock_code = ? ORDER BY trade_date")
+        print(f"查询参数: ['{stock_code}']")
+        
+        # 获取股票已有数据
+        stock_data = get_local_stock_data(stock_code)
+        
+        # 计算需要更新的日期范围
+        current_date = datetime.datetime.now().strftime("%Y%m%d")
+        
+        # 检查是否需要获取数据
+        if not stock_data.empty and not force_update:
+            print(f"股票 {stock_code} 已有 {len(stock_data)} 条历史数据记录")
+            
+            # 获取最后更新日期
+            last_date = stock_data['trade_date'].max()
+            print(f"股票 {stock_code} 最后更新日期为 {last_date}，尝试更新到 {current_date}")
+            
+            # 检查最近的交易日，避免下载到不存在的未来数据
+            latest_trading_day = None
+            if matcher_service:
+                latest_trading_day = matcher_service.get_latest_trading_day()
+                if latest_trading_day:
+                    # 将YYYY-MM-DD格式转换为YYYYMMDD格式
+                    latest_trading_day_fmt = latest_trading_day.replace('-', '')
+                    print(f"检测到最近交易日为: {latest_trading_day}")
+                    
+                    # 如果最后更新日期已经是最近交易日，则不需要更新
+                    if last_date >= latest_trading_day:
+                        print(f"股票 {stock_code} 数据已是最新，无需更新")
+                        return True
+                    
+                    # 使用最近交易日作为结束日期
+                    current_date = latest_trading_day_fmt
+        
+        # 获取股票历史数据
+        print(f"正在从AKShare获取股票 {stock_code} 历史数据 (1/{retry_times})...")
+        
+        # 尝试获取历史数据，支持重试
+        for i in range(retry_times):
+            try:
+                stock_data = get_stock_history(stock_code, days=days)
+                break
+            except Exception as e:
+                print(f"获取股票 {stock_code} 历史数据失败 ({i+1}/{retry_times}): {e}")
+                if i == retry_times - 1:
+                    # 全部重试失败
+                    return False
+                time.sleep(1)  # 避免请求过于频繁
+        
+        # 保存到数据库
+        if not stock_data.empty:
+            save_result = save_stock_data(stock_data)
+            print(f"成功保存 {len(stock_data)} 条股票 {stock_code} 历史数据记录")
+            return save_result
+        else:
+            print(f"获取股票 {stock_code} 历史数据为空")
+            return False
+            
+    except Exception as e:
+        print(f"初始化股票 {stock_code} 数据失败: {e}")
+        return False
+
+def save_stock_data(stock_data):
+    """
+    将股票历史数据保存到数据库
+    
+    Args:
+        stock_data (pd.DataFrame): 股票历史数据DataFrame
+        
+    Returns:
+        bool: 是否成功保存
+    """
+    try:
+        if stock_data.empty:
+            print("股票数据为空，无需保存")
+            return False
+            
+        # 初始化数据库
+        db = Database()
+        stock_model = StockModel(db)
+        
+        # 转换数据准备保存
+        data_to_save = []
+        for _, row in stock_data.iterrows():
+            # 确保必要字段存在
+            if "stock_code" not in row or "trade_date" not in row:
+                continue
+                
+            data_item = {
+                'stock_code': row['stock_code'],
+                'trade_date': row['trade_date'],
+            }
+            
+            # 添加可能存在的其他字段
+            for field in ['open', 'high', 'low', 'close', 'volume', 'amount', 'ma5', 'ma10', 'ma20']:
+                if field in row:
+                    data_item[field] = row[field]
+            
+            data_to_save.append(data_item)
+        
+        # 批量保存到数据库
+        if data_to_save:
+            stock_model.batch_add_daily_data(data_to_save)
+            print(f"成功保存 {len(data_to_save)} 条股票数据记录")
+            return True
+        else:
+            print("没有有效数据需要保存")
+            return False
+            
+    except Exception as e:
+        print(f"保存股票数据失败: {e}")
+        import traceback
+        print(traceback.format_exc())
+        return False
+
+def init_database():
+    """
+    初始化数据库，创建必要的表结构
+    
+    Returns:
+        bool: 是否成功初始化
+    """
+    try:
+        # 初始化数据库
+        db = Database()
+        
+        # 数据库表已经在Database类初始化时自动创建，无需额外操作
+        print("数据库初始化完成")
+        
+        # 测试创建一个示例股票
+        stock_model = StockModel(db)
+        
+        # 检查示例股票是否存在
+        sample_stock = "000001"  # 平安银行
+        stock_info = stock_model.get_stock_info(sample_stock)
+        
+        if not stock_info:
+            print(f"添加示例股票 {sample_stock}...")
+            stock_model.add_stock(
+                stock_code=sample_stock,
+                stock_name="平安银行",
+                market_type="主板"
+            )
+        
+        return True
+    except Exception as e:
+        print(f"初始化数据库失败: {e}")
+        import traceback
+        print(traceback.format_exc())
+        return False
 
 if __name__ == "__main__":
     # 从命令行参数获取天数（可选）

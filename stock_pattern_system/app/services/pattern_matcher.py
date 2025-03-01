@@ -8,15 +8,17 @@ import os
 import json
 import numpy as np
 import pandas as pd
+import datetime
 from pathlib import Path
 import matplotlib.pyplot as plt
 from concurrent.futures import ProcessPoolExecutor
 
-from app.models.stock import StockModel
-from app.models.pattern import PatternModel
-from app.services.dtw_matcher import DTWMatcher
-# 移除直接导入，改为延迟导入
-# from app.services.pattern_templates import PatternTemplateManager, normalize_pattern
+# 修改导入路径为绝对路径
+from stock_pattern_system.app.models.stock import StockModel
+from stock_pattern_system.app.models.pattern import PatternModel
+from stock_pattern_system.app.services.dtw_matcher import DTWMatcher
+# 导入normalize_pattern函数
+from stock_pattern_system.app.services.pattern_templates import PatternTemplateManager, normalize_pattern
 
 class PatternMatcherService:
     """形态匹配服务，提供股票形态匹配功能"""
@@ -40,89 +42,160 @@ class PatternMatcherService:
         )
         
         # 延迟导入并初始化模板管理器
-        from app.services.pattern_templates import PatternTemplateManager
         self.template_manager = PatternTemplateManager(templates_file)
+        
+        # 初始化数据库连接
+        # 使用原有连接方式，不引入新的依赖
+        import sqlite3
+        from pathlib import Path
+        
+        # 获取数据库文件路径
+        db_path = os.path.join(Path(__file__).parent.parent.parent, 'data', 'stock_data.db')
+        print(f"连接数据库: {db_path}")
+        
+        # 创建连接
+        try:
+            # 启用线程安全检查
+            self.db_conn = sqlite3.connect(db_path, check_same_thread=False)
+            print("数据库连接成功")
+        except Exception as e:
+            print(f"数据库连接失败: {e}")
+            self.db_conn = None
         
     def get_pattern_templates(self):
         """获取所有形态模板"""
         return self.template_manager.get_all_templates()
         
-    def match_pattern(self, pattern_id=None, pattern_data=None, market_types=None, 
-                    indicators=None, start_date=None, end_date=None, 
-                    top_n=20, min_similarity=0.7):
-        """
-        匹配形态
+    def match_pattern(self, pattern_id, market_types=None, indicators=None, start_date=None, end_date=None, top_n=20, min_similarity=0.7):
+        """执行形态匹配
         
         Args:
-            pattern_id (str, optional): 形态模板ID
-            pattern_data (array-like, optional): 形态数据
-            market_types (list, optional): 市场类型过滤
-            indicators (list, optional): 使用的指标列表
-            start_date (str, optional): 开始日期
-            end_date (str, optional): 结束日期
-            top_n (int): 返回的最佳匹配数量
-            min_similarity (float): 最小相似度阈值
+            pattern_id: 形态模板ID
+            market_types: 市场类型列表
+            indicators: 匹配指标列表
+            start_date: 开始日期
+            end_date: 结束日期
+            top_n: 返回前N个结果
+            min_similarity: 最小相似度阈值
             
         Returns:
             list: 匹配结果列表
         """
-        # 获取模式数据
-        pattern_series = self._get_pattern_data(pattern_id, pattern_data)
-        if pattern_series is None:
-            return []
+        try:
+            # 获取形态模板
+            pattern_template = self.get_pattern_template(pattern_id)
+            if not pattern_template:
+                print(f"未找到形态模板: {pattern_id}")
+                return []
             
-        # 获取候选股票列表
-        candidates = self._get_candidates(market_types, indicators, start_date, end_date)
-        if not candidates:
-            return []
+            pattern_data = pattern_template.get("data", [])
+            if not pattern_data:
+                print(f"形态模板数据为空: {pattern_id}")
+                return []
             
-        # 执行匹配
-        candidate_series = []
-        for candidate in candidates:
-            candidate_series.append((candidate['data'], candidate))
+            # 准备数据
+            print(f"正在准备匹配数据，应用市场类型过滤: {', '.join(market_types) if market_types else '全部'}")
             
-        # 查找最佳匹配
-        matches = []
-        
-        # 使用并行处理计算相似度
-        if self.dtw_matcher.max_workers is not None and self.dtw_matcher.max_workers > 1:
-            with ProcessPoolExecutor(max_workers=self.dtw_matcher.max_workers) as executor:
-                # 准备任务
-                futures = []
-                for candidate in candidates:
-                    future = executor.submit(
-                        self._compute_similarity_task, 
-                        pattern_series, 
-                        candidate['data'],
-                        candidate
-                    )
-                    futures.append(future)
+            # 获取符合条件的股票数据
+            stocks_data = self._get_stocks_data(market_types, indicators, start_date, end_date)
+            
+            # 统计满足条件的股票数量
+            available_stocks = len(stocks_data)
+            print(f"开始形态匹配，使用符合条件的 {available_stocks} 只股票进行匹配...")
+            
+            if market_types:
+                print(f"仅匹配选定的市场类型: {', '.join(market_types)}")
+            
+            if available_stocks == 0:
+                print("没有找到符合条件的股票数据")
+                return []
+            
+            # 初始化相似度列表
+            similarities = []
+            
+            # 对每只股票进行匹配
+            # 分批处理，每批100只股票，显示处理进度
+            batch_size = 100
+            total_batches = (available_stocks + batch_size - 1) // batch_size
+            
+            # 获取股票代码列表
+            stock_code_list = list(stocks_data.keys())
+            
+            processed_count = 0
+            for batch_idx in range(total_batches):
+                start_idx = batch_idx * batch_size
+                end_idx = min((batch_idx + 1) * batch_size, available_stocks)
+                batch_stock_codes = stock_code_list[start_idx:end_idx]
                 
-                # 收集结果
-                for future in futures:
-                    try:
-                        result = future.result()
-                        if result and result['similarity'] >= min_similarity:
-                            matches.append(result)
-                    except Exception as e:
-                        print(f"计算相似度时发生错误: {e}")
-        else:
-            # 串行处理
-            for candidate in candidates:
-                try:
-                    result = self._compute_similarity_task(pattern_series, candidate['data'], candidate)
-                    if result and result['similarity'] >= min_similarity:
-                        matches.append(result)
-                except Exception as e:
-                    print(f"计算相似度时发生错误: {e}")
-        
-        # 按相似度排序
-        matches.sort(key=lambda x: x['similarity'], reverse=True)
-        
-        # 限制返回数量
-        matches = matches[:top_n]
-        
-        return matches
+                for stock_code in batch_stock_codes:
+                    # 获取股票信息
+                    stock_info = stocks_data[stock_code]
+                    
+                    # 获取需要匹配的指标数据
+                    for indicator in indicators:
+                        if indicator not in stock_info['data']:
+                            continue
+                            
+                        indicator_data = stock_info['data'][indicator]
+                        
+                        # 使用normalize_pattern函数归一化数据
+                        normalized_data = normalize_pattern(indicator_data)
+                        
+                        # 计算相似度
+                        try:
+                            similarity = self.dtw_matcher.compute_similarity(pattern_data, normalized_data)
+                            
+                            # 计算最佳匹配位置
+                            position = 0
+                            match_length = len(pattern_data)
+                            
+                            if len(normalized_data) > len(pattern_data):
+                                # 寻找最佳匹配窗口
+                                max_similarity = 0
+                                for i in range(len(normalized_data) - len(pattern_data) + 1):
+                                    window = normalized_data[i:i+len(pattern_data)]
+                                    window_similarity = self.dtw_matcher.compute_similarity(pattern_data, window)
+                                    if window_similarity > max_similarity:
+                                        max_similarity = window_similarity
+                                        position = i
+                                similarity = max_similarity
+                        except Exception as e:
+                            print(f"计算股票 {stock_code} 的相似度时出错: {e}")
+                            continue
+                            
+                        if similarity >= min_similarity:
+                            # 构建匹配详情
+                            match_info = {
+                                'code': stock_code,
+                                'name': stock_info['name'],
+                                'similarity': similarity,
+                                'match_details': {
+                                    'position': position,
+                                    'length': match_length,
+                                    'data': indicator_data[position:position + match_length] if position + match_length <= len(indicator_data) else indicator_data[position:]
+                                }
+                            }
+                            similarities.append(match_info)
+                    
+                    processed_count += 1
+                
+                # 显示批次进度
+                if batch_idx % 5 == 0 or batch_idx == total_batches - 1:
+                    print(f"形态匹配进度: {processed_count}/{available_stocks} 只股票 (批次 {batch_idx+1}/{total_batches})")
+            
+            # 按相似度排序并取前N个
+            sorted_results = sorted(similarities, key=lambda x: x['similarity'], reverse=True)
+            top_results = sorted_results[:top_n]
+            
+            print(f"形态匹配完成，找到 {len(top_results)} 个匹配度较高的结果")
+            
+            return top_results
+            
+        except Exception as e:
+            print(f"形态匹配过程中出错: {e}")
+            import traceback
+            print(traceback.format_exc())
+            return []
     
     def _compute_similarity_task(self, pattern_series, candidate_series, candidate_info):
         """
@@ -234,11 +307,15 @@ class PatternMatcherService:
         indicators = indicators or ["close"]
         indicator = indicators[0]  # 暂时只使用第一个指标
         
-        # 获取股票列表
+        # 获取股票列表并应用市场类型过滤
         stocks = []
         for market_type in market_types:
             market_stocks = self.stock_model.get_stock_list(market_type=market_type)
             stocks.extend(market_stocks)
+        
+        if market_types:
+            market_str = "、".join(market_types)
+            print(f"正在准备匹配数据，应用市场类型过滤: {market_str}，共 {len(stocks)} 只股票")
         
         candidates = []
         for stock in stocks:
@@ -267,6 +344,138 @@ class PatternMatcherService:
             })
             
         return candidates
+    
+    def check_data_completeness(self, market_types=None, start_date=None, end_date=None, required_stocks=None):
+        """检查数据完整性
+        
+        Args:
+            market_types: 市场类型列表
+            start_date: 开始日期
+            end_date: 结束日期
+            required_stocks: 需要检查的股票代码列表
+            
+        Returns:
+            tuple: (是否完整, 总数, 有数据数量, 缺失股票列表)
+        """
+        try:
+            # 获取本地已有数据的股票列表
+            local_stocks = self.get_all_local_stocks(start_date, end_date)
+            
+            if required_stocks:
+                print(f"使用指定的股票列表进行检查，共 {len(required_stocks)} 只股票")
+                all_stocks = required_stocks
+            else:
+                print(f"没有指定股票列表，使用全部本地股票进行检查")
+                all_stocks = local_stocks
+                
+            # 计算有数据和缺失的股票
+            with_data = []
+            missing = []
+            
+            for stock_code in all_stocks:
+                if stock_code in local_stocks:
+                    with_data.append(stock_code)
+                else:
+                    missing.append(stock_code)
+            
+            is_complete = len(missing) == 0
+            
+            print(f"数据完整性检查结果: 需要股票 {len(all_stocks)} 只, 本地有数据 {len(with_data)} 只, 缺失 {len(missing)} 只")
+            print(f"数据是否完整: {'是' if is_complete else '否'}")
+            
+            return is_complete, len(all_stocks), len(with_data), missing
+            
+        except Exception as e:
+            print(f"检查数据完整性出错: {e}")
+            import traceback
+            print(traceback.format_exc())
+            # 出错时假定数据不完整
+            return False, 0, 0, required_stocks or []
+    
+    def _find_stock_info(self, stocks_list, stock_code):
+        """
+        在股票列表中查找特定股票代码的信息
+        
+        Args:
+            stocks_list (list): 股票信息列表
+            stock_code (str): 要查找的股票代码
+            
+        Returns:
+            dict: 股票信息字典，如果找不到返回None
+        """
+        for stock in stocks_list:
+            if stock['stock_code'] == stock_code:
+                return stock
+        return None
+    
+    def fetch_missing_data(self, missing_stocks, start_date=None, end_date=None, callback=None, batch_size=20):
+        """
+        获取缺失的股票数据并保存到数据库
+        
+        Args:
+            missing_stocks (list): 缺失数据的股票列表
+            start_date (str, optional): 开始日期
+            end_date (str, optional): 结束日期
+            callback (callable, optional): 进度回调函数，接受参数(当前进度, 总数)
+            batch_size (int): 批处理大小，避免请求过于频繁
+            
+        Returns:
+            tuple: (成功获取的股票数, 失败的股票数)
+        """
+        # 导入data_fetcher模块
+        from stock_pattern_system.app.data_fetcher import get_stock_history, init_single_stock_data
+        import time
+        
+        total_stocks = len(missing_stocks)
+        success_count = 0
+        failure_count = 0
+        
+        # 确保至少下载部分数据，即使被中断也能使用部分结果
+        if total_stocks == 0:
+            print("没有缺失的股票数据需要获取")
+            return (0, 0)
+        
+        print(f"开始获取全市场股票历史数据，共 {total_stocks} 只股票...")
+        print("正在下载所有缺失的A股市场股票数据，不受市场类型过滤限制")
+        print("此过程将较为耗时，请耐心等待...")
+        
+        # 处理所有缺失的股票数据
+        for i, stock in enumerate(missing_stocks):
+            stock_code = stock['code']
+            stock_name = stock.get('name', stock_code)
+            
+            try:
+                # 初始化单只股票数据
+                progress = f"{i+1}/{total_stocks}"
+                percent = round((i+1) / total_stocks * 100, 1)
+                print(f"正在下载第 {progress} 只股票 ({percent}%) - {stock_code} {stock_name}...")
+                
+                if callback:
+                    callback(i+1, total_stocks)
+                
+                result = init_single_stock_data(
+                    stock_code=stock_code,
+                    days=365,  # 获取一年数据
+                    retry_times=3  # 增加重试次数
+                )
+                
+                if result:
+                    success_count += 1
+                    print(f"成功获取股票 {stock_code} 数据")
+                else:
+                    failure_count += 1
+                    print(f"获取股票 {stock_code} 数据失败")
+                
+                # 避免请求太频繁，批量处理
+                if (i + 1) % batch_size == 0:
+                    print(f"已处理 {i+1}/{total_stocks} 只股票，暂停一下...")
+                    time.sleep(2)  # 暂停一下，避免请求太频繁
+            except Exception as e:
+                failure_count += 1
+                print(f"获取股票 {stock_code} 时发生错误: {e}")
+        
+        print(f"数据获取完成：成功 {success_count} 只，失败 {failure_count} 只")
+        return (success_count, failure_count)
     
     def save_match_results(self, matches, output_file=None):
         """
@@ -553,7 +762,7 @@ class PatternMatcherService:
         df['name'] = stock_name
         
         # 创建模板
-        from app.services.pattern_templates import create_pattern_template_from_stock
+        from stock_pattern_system.app.services.pattern_templates import create_pattern_template_from_stock
         template = create_pattern_template_from_stock(
             stock_data=df,
             start_date=start_date,
@@ -585,23 +794,529 @@ class PatternMatcherService:
         Returns:
             dict: 股票数据，包含日期和值
         """
-        # 获取股票历史数据
-        df = self.stock_model.get_stock_history(
-            stock_code, 
-            start_date=start_date, 
-            end_date=end_date,
-            indicators=['trade_date', indicator]
-        )
-        
-        if df.empty:
-            return {'dates': [], 'values': []}
+        try:
+            # 检查股票代码是否有效
+            if not stock_code or not isinstance(stock_code, str):
+                print(f"无效的股票代码: {stock_code}")
+                return {'dates': [], 'values': []}
             
-        # 处理缺失值
-        df = df.dropna(subset=[indicator])
+            # 标准化股票代码(去除可能的前缀)
+            stock_code = stock_code.strip()
+            if len(stock_code) > 6:
+                stock_code = stock_code[-6:]
+            
+            # 检查输入指标是否有效
+            valid_indicators = ["open", "high", "low", "close", "volume", "amount", "ma5", "ma10", "ma20"]
+            if indicator not in valid_indicators:
+                print(f"警告: 无效的指标 {indicator}，使用默认指标 close")
+                indicator = "close"
+                
+            # 获取股票历史数据
+            needed_indicators = ['trade_date', indicator]
+            print(f"正在获取股票 {stock_code} 的历史数据，指标: {needed_indicators}")
+            
+            df = self.stock_model.get_stock_history(
+                stock_code, 
+                start_date=start_date, 
+                end_date=end_date,
+                indicators=needed_indicators
+            )
+            
+            if df.empty:
+                print(f"股票 {stock_code} 在日期范围 {start_date} 到 {end_date} 内没有数据")
+                return {'dates': [], 'values': []}
+                
+            # 检查必要列是否存在
+            if 'trade_date' not in df.columns or indicator not in df.columns:
+                missing_cols = []
+                if 'trade_date' not in df.columns:
+                    missing_cols.append('trade_date')
+                if indicator not in df.columns:
+                    missing_cols.append(indicator)
+                print(f"警告: 数据中缺少必要列: {', '.join(missing_cols)}")
+                return {'dates': [], 'values': []}
+                
+            # 处理缺失值
+            df = df.dropna(subset=[indicator])
+            
+            # 如果数据量太少，返回空结果
+            if len(df) < 5:
+                print(f"警告: 股票 {stock_code} 的有效数据点太少: {len(df)}")
+                return {'dates': [], 'values': []}
+            
+            # 返回数据
+            print(f"成功获取到 {len(df)} 条股票数据记录")
+            return {
+                'dates': df['trade_date'].tolist(),
+                'values': df[indicator].tolist(),
+                'stock_code': stock_code,
+                'indicator': indicator
+            }
+            
+        except Exception as e:
+            # 捕获并记录所有异常
+            import traceback
+            error_trace = traceback.format_exc()
+            print(f"获取股票数据时出错: {type(e).__name__} - {str(e)}")
+            print(f"错误详情: {error_trace}")
+            
+            # 返回空数据而不是抛出异常
+            return {'dates': [], 'values': [], 'error': str(e)}
+    
+    def get_all_local_stocks(self, start_date=None, end_date=None):
+        """获取本地数据库中有数据的所有股票代码
         
-        return {
-            'dates': df['trade_date'].tolist(),
-            'values': df[indicator].tolist(),
-            'stock_code': stock_code,
-            'indicator': indicator
-        } 
+        Args:
+            start_date: 开始日期
+            end_date: 结束日期
+            
+        Returns:
+            list: 有数据的股票代码列表
+        """
+        try:
+            if not self.db_conn:
+                print("数据库连接不存在，无法获取本地股票列表")
+                return []
+                
+            # 为避免线程问题，每次使用时创建新的游标对象
+            cursor = self.db_conn.cursor()
+            
+            # 构建SQL查询
+            sql = "SELECT DISTINCT stock_code FROM daily_data"
+            params = []
+            
+            # 如果提供了日期范围，筛选有该日期范围数据的股票
+            if start_date and end_date:
+                sql = """
+                SELECT DISTINCT stock_code 
+                FROM daily_data
+                WHERE trade_date >= ? AND trade_date <= ?
+                """
+                params = [start_date, end_date]
+                
+            # 执行查询
+            print(f"执行SQL查询获取所有本地股票: {sql}")
+            print(f"查询参数: {params}")
+            
+            if params:
+                cursor.execute(sql, params)
+            else:
+                cursor.execute(sql)
+                
+            # 获取结果
+            results = cursor.fetchall()
+            stock_codes = [row[0] for row in results]
+            
+            print(f"本地数据库中共有 {len(stock_codes)} 只股票有数据")
+            return stock_codes
+            
+        except Exception as e:
+            print(f"获取本地股票列表出错: {e}")
+            import traceback
+            print(traceback.format_exc())
+            return []
+    
+    def get_latest_trading_day(self, target_date=None):
+        """获取指定日期最近的交易日
+        
+        如果指定日期不是交易日，则返回该日期之前的最近交易日
+        
+        Args:
+            target_date: 目标日期，格式为YYYY-MM-DD，默认为当前日期
+            
+        Returns:
+            str: 最近的交易日，格式为YYYY-MM-DD
+        """
+        try:
+            if not self.db_conn:
+                print("数据库连接不存在，无法查询交易日")
+                return None
+                
+            # 如果未指定日期，使用当前日期
+            if not target_date:
+                target_date = datetime.datetime.now().strftime("%Y-%m-%d")
+                
+            cursor = self.db_conn.cursor()
+            
+            # 查询小于等于指定日期的最近交易日
+            # 使用GROUP BY确保只返回存在数据的日期
+            sql = """
+            SELECT MAX(trade_date) 
+            FROM daily_data 
+            WHERE trade_date <= ?
+            """
+            
+            print(f"执行SQL查询最近交易日: {sql}")
+            print(f"查询参数: [{target_date}]")
+            
+            cursor.execute(sql, [target_date])
+            result = cursor.fetchone()
+            
+            if result and result[0]:
+                latest_trading_day = result[0]
+                print(f"查询到的最近交易日为: {latest_trading_day}")
+                return latest_trading_day
+            else:
+                print(f"未查询到小于等于 {target_date} 的交易日")
+                return None
+                
+        except Exception as e:
+            print(f"查询最近交易日出错: {e}")
+            import traceback
+            print(traceback.format_exc())
+            return None 
+    
+    def query_database_statistics(self):
+        """查询数据库统计信息
+        
+        Returns:
+            dict: 包含数据库统计信息的字典
+        """
+        try:
+            if not self.db_conn:
+                print("数据库连接不存在，无法查询统计信息")
+                return {"error": "数据库连接不存在"}
+                
+            cursor = self.db_conn.cursor()
+            stats = {}
+            
+            # 查询股票总数
+            cursor.execute("SELECT COUNT(DISTINCT stock_code) FROM daily_data")
+            stats["stock_count"] = cursor.fetchone()[0]
+            
+            # 查询数据总条数
+            cursor.execute("SELECT COUNT(*) FROM daily_data")
+            stats["record_count"] = cursor.fetchone()[0]
+            
+            # 查询最早和最晚的交易日期
+            cursor.execute("SELECT MIN(trade_date), MAX(trade_date) FROM daily_data")
+            min_date, max_date = cursor.fetchone()
+            stats["earliest_date"] = min_date
+            stats["latest_date"] = max_date
+            
+            # 查询每只股票的数据条数统计
+            cursor.execute("""
+                SELECT 
+                    stock_code, 
+                    COUNT(*) as record_count,
+                    MIN(trade_date) as earliest_date,
+                    MAX(trade_date) as latest_date
+                FROM daily_data
+                GROUP BY stock_code
+                ORDER BY record_count DESC
+                LIMIT 10
+            """)
+            
+            stats["top_stocks"] = [
+                {
+                    "stock_code": row[0],
+                    "record_count": row[1],
+                    "earliest_date": row[2],
+                    "latest_date": row[3]
+                }
+                for row in cursor.fetchall()
+            ]
+            
+            # 查询交易日期覆盖情况
+            cursor.execute("""
+                SELECT 
+                    trade_date, 
+                    COUNT(DISTINCT stock_code) as stock_count
+                FROM daily_data
+                GROUP BY trade_date
+                ORDER BY trade_date DESC
+                LIMIT 30
+            """)
+            
+            stats["recent_dates"] = [
+                {
+                    "trade_date": row[0],
+                    "stock_count": row[1]
+                }
+                for row in cursor.fetchall()
+            ]
+            
+            print(f"数据库统计: 股票数 {stats['stock_count']}, 记录数 {stats['record_count']}")
+            print(f"数据日期范围: {stats['earliest_date']} 至 {stats['latest_date']}")
+            
+            return stats
+            
+        except Exception as e:
+            print(f"查询数据库统计信息出错: {e}")
+            import traceback
+            print(traceback.format_exc())
+            return {"error": str(e)}
+    
+    def query_stock_data(self, stock_codes=None, start_date=None, end_date=None, 
+                       indicators=None, limit=1000, output_format="dict"):
+        """查询指定股票的数据
+        
+        Args:
+            stock_codes: 股票代码列表或单个股票代码，为None则查询全部
+            start_date: 开始日期，格式为YYYY-MM-DD
+            end_date: 结束日期，格式为YYYY-MM-DD
+            indicators: 需要的指标列表，默认为全部
+            limit: 限制返回的记录数，默认1000条
+            output_format: 输出格式，可选 "dict", "dataframe", "json"
+            
+        Returns:
+            根据output_format返回相应格式的数据
+        """
+        try:
+            if not self.db_conn:
+                print("数据库连接不存在，无法查询股票数据")
+                return None
+                
+            cursor = self.db_conn.cursor()
+            
+            # 构建SQL查询
+            if indicators and isinstance(indicators, list):
+                # 确保包含stock_code和trade_date
+                if "stock_code" not in indicators:
+                    indicators.append("stock_code")
+                if "trade_date" not in indicators:
+                    indicators.append("trade_date")
+                    
+                # 构建SELECT字段
+                fields = ", ".join(indicators)
+            else:
+                fields = "*"
+            
+            sql = f"SELECT {fields} FROM daily_data WHERE 1=1"
+            params = []
+            
+            # 添加股票代码条件
+            if stock_codes:
+                if isinstance(stock_codes, list):
+                    # 多只股票
+                    placeholders = ", ".join(["?" for _ in stock_codes])
+                    sql += f" AND stock_code IN ({placeholders})"
+                    params.extend(stock_codes)
+                else:
+                    # 单只股票
+                    sql += " AND stock_code = ?"
+                    params.append(stock_codes)
+            
+            # 添加日期范围条件
+            if start_date:
+                sql += " AND trade_date >= ?"
+                params.append(start_date)
+            if end_date:
+                sql += " AND trade_date <= ?"
+                params.append(end_date)
+            
+            # 添加排序和限制
+            sql += " ORDER BY stock_code, trade_date"
+            if limit:
+                sql += f" LIMIT {limit}"
+            
+            # 执行查询
+            print(f"执行SQL查询股票数据: {sql}")
+            print(f"查询参数: {params}")
+            
+            # 获取结果
+            cursor.execute(sql, params)
+            columns = [desc[0] for desc in cursor.description]
+            results = cursor.fetchall()
+            
+            print(f"查询到 {len(results)} 条记录")
+            
+            # 根据输出格式返回结果
+            if output_format == "dataframe":
+                import pandas as pd
+                df = pd.DataFrame(results, columns=columns)
+                return df
+            elif output_format == "json":
+                import json
+                json_data = []
+                for row in results:
+                    json_data.append(dict(zip(columns, row)))
+                return json.dumps(json_data, ensure_ascii=False, indent=2)
+            else:
+                # 默认返回字典列表
+                dict_data = []
+                for row in results:
+                    dict_data.append(dict(zip(columns, row)))
+                return dict_data
+                
+        except Exception as e:
+            print(f"查询股票数据出错: {e}")
+            import traceback
+            print(traceback.format_exc())
+            return None 
+    
+    def _get_stocks_data(self, market_types=None, indicators=None, start_date=None, end_date=None, required_stocks=None):
+        """
+        获取指定市场类型、指标和日期范围的股票数据
+        
+        Args:
+            market_types (list): 市场类型列表
+            indicators (list): 技术指标列表
+            start_date (str): 开始日期
+            end_date (str): 结束日期
+            required_stocks (list): 指定需要获取的股票代码列表
+            
+        Returns:
+            dict: 股票代码到数据的映射
+        """
+        try:
+            # 确保数据库连接有效
+            if not self.db_conn:
+                print("数据库连接不存在，无法获取股票数据")
+                return {}
+                
+            # 参数预处理
+            if indicators is None:
+                indicators = ["close"]
+                
+            # 获取股票列表
+            stock_codes = []
+            if required_stocks and len(required_stocks) > 0:
+                # 使用指定的股票列表
+                stock_codes = required_stocks
+                print(f"使用指定的股票列表: {len(stock_codes)} 只")
+            elif market_types and len(market_types) > 0:
+                # 根据市场类型筛选股票
+                # 修改：直接从数据库查询，避免调用不存在的方法
+                from stock_pattern_system.app.data_fetcher import get_stock_list
+                
+                # 获取所有股票
+                all_stocks_df = get_stock_list()
+                if all_stocks_df.empty:
+                    print("获取股票列表失败")
+                    return {}
+                    
+                # 根据市场类型过滤
+                filtered_stocks = all_stocks_df[all_stocks_df['market_type'].isin(market_types)]
+                stock_codes = filtered_stocks['code'].tolist()
+                print(f"根据市场类型 {market_types} 筛选出 {len(stock_codes)} 只股票")
+            else:
+                # 修改：直接从本地数据库获取所有股票代码
+                stock_codes = self.get_all_local_stocks(start_date, end_date)
+                print(f"使用本地数据库中所有 {len(stock_codes)} 只股票")
+                
+            # 构建SQL查询获取多只股票的多个指标数据
+            print(f"开始查询 {len(stock_codes)} 只股票的历史数据")
+            
+            # 准备查询字段
+            fields = ["stock_code", "trade_date"] + indicators
+            fields_str = ", ".join(fields)
+            
+            # 处理大量股票代码的情况，避免SQLite参数限制
+            max_params = 500  # SQLite参数限制通常为999，设置小一点以确保安全
+            stocks_data = {}
+            
+            # 分批查询处理
+            for i in range(0, len(stock_codes), max_params):
+                batch_codes = stock_codes[i:i+max_params]
+                
+                # 构建SQL查询
+                sql = f"""
+                SELECT {fields_str} 
+                FROM daily_data 
+                WHERE stock_code IN ({','.join(['?'] * len(batch_codes))})
+                """
+                
+                # 添加日期范围条件
+                params = batch_codes.copy()
+                if start_date:
+                    sql += " AND trade_date >= ?"
+                    params.append(start_date)
+                if end_date:
+                    sql += " AND trade_date <= ?"
+                    params.append(end_date)
+                    
+                # 添加排序
+                sql += " ORDER BY stock_code, trade_date"
+                
+                # 执行查询
+                batch_num = i // max_params + 1
+                batch_total = (len(stock_codes) + max_params - 1) // max_params
+                print(f"执行批次 {batch_num}/{batch_total} SQL查询获取股票数据，本批次 {len(batch_codes)} 只股票")
+                
+                # 创建新的游标
+                cursor = self.db_conn.cursor()
+                cursor.execute(sql, params)
+                
+                # 处理结果
+                results = cursor.fetchall()
+                print(f"批次 {batch_num} 查询结果: {len(results)} 条记录")
+                
+                # 将结果整理为字典格式
+                columns = [col[0] for col in cursor.description]
+                
+                for row in results:
+                    row_dict = dict(zip(columns, row))
+                    stock_code = row_dict["stock_code"]
+                    
+                    if stock_code not in stocks_data:
+                        stocks_data[stock_code] = {indicator: [] for indicator in indicators}
+                        stocks_data[stock_code]["trade_date"] = []
+                        # 添加名称字段，用于显示
+                        stocks_data[stock_code]["name"] = ""
+                        
+                    # 添加交易日期
+                    stocks_data[stock_code]["trade_date"].append(row_dict["trade_date"])
+                    
+                    # 添加各个指标的值
+                    for indicator in indicators:
+                        if indicator in row_dict:
+                            stocks_data[stock_code][indicator].append(row_dict[indicator])
+            
+            # 获取股票名称
+            print("正在获取股票名称...")
+            # 使用现有的数据获取名称
+            from stock_pattern_system.app.data_fetcher import get_stock_list
+            try:
+                # 获取所有股票名称的映射
+                stock_list_df = get_stock_list()
+                if not stock_list_df.empty:
+                    # 创建代码->名称映射
+                    name_map = dict(zip(stock_list_df['code'], stock_list_df['name']))
+                    
+                    # 添加名称到结果
+                    for stock_code in stocks_data:
+                        if stock_code in name_map:
+                            stocks_data[stock_code]["name"] = name_map[stock_code]
+                        else:
+                            stocks_data[stock_code]["name"] = stock_code
+            except Exception as e:
+                print(f"获取股票名称出错: {e}")
+                # 如果无法获取名称，使用代码作为名称
+                for stock_code in stocks_data:
+                    if not stocks_data[stock_code]["name"]:
+                        stocks_data[stock_code]["name"] = stock_code
+            
+            # 计算获取到的股票数量
+            actual_stock_count = len(stocks_data)
+            if len(stock_codes) > 0:
+                coverage = actual_stock_count / len(stock_codes) * 100
+            else:
+                coverage = 0
+            print(f"成功获取 {actual_stock_count} 只股票的数据 (占请求股票的 {coverage:.1f}%)")
+            
+            # 在返回前，为了匹配逻辑，将数据组织为需要的格式
+            formatted_data = {}
+            for stock_code, data in stocks_data.items():
+                # 确保有足够的数据点
+                if not data[indicators[0]] or len(data[indicators[0]]) < 10:
+                    continue
+                
+                formatted_data[stock_code] = {
+                    'name': data['name'],
+                    'data': {
+                        'trade_date': data['trade_date']
+                    }
+                }
+                
+                # 添加各个指标
+                for indicator in indicators:
+                    formatted_data[stock_code]['data'][indicator] = data[indicator]
+            
+            return formatted_data
+            
+        except Exception as e:
+            print(f"获取股票数据出错: {e}")
+            import traceback
+            print(traceback.format_exc())
+            return {} 

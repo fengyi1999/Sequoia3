@@ -4,6 +4,7 @@
 import json
 from datetime import datetime, timedelta
 from .database import Database
+import pandas as pd
 
 class StockModel:
     """股票数据模型，提供对股票数据的操作"""
@@ -134,26 +135,54 @@ class StockModel:
         Returns:
             pandas.DataFrame: 股票历史数据
         """
-        # 确定要查询的字段
-        if indicators:
-            fields = ", ".join(["stock_code", "trade_date"] + indicators)
-        else:
-            fields = "*"
+        try:
+            # 检查股票是否存在
+            stock_info = self.get_stock_info(stock_code)
+            if not stock_info:
+                print(f"警告: 股票 {stock_code} 在数据库中不存在")
+                # 返回空的DataFrame
+                return pd.DataFrame()
+                
+            # 确定要查询的字段
+            if indicators:
+                # 确保stock_code和trade_date始终包含在内
+                fields = set(["stock_code", "trade_date"])
+                for ind in indicators:
+                    fields.add(ind)
+                
+                # 移除重复的字段名
+                if 'trade_date' in fields and indicators and 'trade_date' in indicators:
+                    indicators.remove('trade_date')
+                fields_str = ", ".join(fields)
+            else:
+                fields_str = "*"
+                
+            query = f"SELECT {fields_str} FROM daily_data WHERE stock_code = ?"
+            params = [stock_code]
             
-        query = f"SELECT {fields} FROM daily_data WHERE stock_code = ?"
-        params = [stock_code]
-        
-        if start_date:
-            query += " AND trade_date >= ?"
-            params.append(start_date)
+            if start_date:
+                query += " AND trade_date >= ?"
+                params.append(start_date)
+                
+            if end_date:
+                query += " AND trade_date <= ?"
+                params.append(end_date)
+                
+            query += " ORDER BY trade_date"
             
-        if end_date:
-            query += " AND trade_date <= ?"
-            params.append(end_date)
+            # 记录查询信息用于调试
+            print(f"执行SQL查询: {query}")
+            print(f"查询参数: {params}")
             
-        query += " ORDER BY trade_date"
-        
-        return self.db.query_to_dataframe(query, tuple(params))
+            return self.db.query_to_dataframe(query, tuple(params))
+            
+        except Exception as e:
+            import traceback
+            print(f"获取股票历史数据时出错: {e}")
+            print(traceback.format_exc())
+            
+            # 返回空的DataFrame而不是抛出异常
+            return pd.DataFrame()
     
     def add_daily_data(self, stock_code, trade_date, open_price, high, low, close, volume, amount=None, ma5=None, ma10=None, ma20=None):
         """

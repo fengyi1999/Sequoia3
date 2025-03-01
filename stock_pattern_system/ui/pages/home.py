@@ -1,11 +1,15 @@
 """
 首页布局
 """
+import os
 import dash_bootstrap_components as dbc
 from dash import html, dcc
 
 def create_home_layout():
     """创建首页布局"""
+    # 检查是否使用模拟服务
+    USE_MOCK_SERVICES = os.environ.get("USE_MOCK_SERVICES", "0") == "1"
+    
     layout = html.Div(
         [
             dbc.Row(
@@ -18,6 +22,12 @@ def create_home_layout():
                                 className="lead",
                             ),
                             html.Hr(className="my-4"),
+                            # 添加系统模式信息
+                            dbc.Alert(
+                                f"当前系统模式: {'模拟数据' if USE_MOCK_SERVICES else '真实数据'}",
+                                color="info" if USE_MOCK_SERVICES else "success",
+                                className="mb-3"
+                            ),
                         ],
                         width=12,
                     )

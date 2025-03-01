@@ -435,12 +435,24 @@ class PatternTemplateManager:
         """确保模板文件和目录存在"""
         templates_dir = os.path.dirname(self.templates_file)
         if not os.path.exists(templates_dir):
-            os.makedirs(templates_dir, exist_ok=True)
+            try:
+                os.makedirs(templates_dir, exist_ok=True)
+                print(f"已创建模板目录: {templates_dir}")
+            except Exception as e:
+                print(f"创建模板目录失败: {e}")
         
         # 如果文件不存在，创建一个空的模板文件
         if not os.path.exists(self.templates_file):
-            with open(self.templates_file, 'w', encoding='utf-8') as f:
-                json.dump([], f, ensure_ascii=False)
+            try:
+                with open(self.templates_file, 'w', encoding='utf-8') as f:
+                    json.dump([], f, ensure_ascii=False)
+                print(f"已创建空模板文件: {self.templates_file}")
+            except Exception as e:
+                print(f"创建模板文件失败: {e}")
+                # 如果无法创建文件，将模板保存到临时位置
+                backup_file = os.path.join(PROJECT_ROOT, "data", "pattern_templates_backup.json")
+                self.templates_file = backup_file
+                print(f"将使用备用模板文件: {backup_file}")
     
     def load_templates(self):
         """加载形态模板"""
@@ -452,8 +464,28 @@ class PatternTemplateManager:
     
     def save_templates(self):
         """保存形态模板"""
-        with open(self.templates_file, 'w', encoding='utf-8') as f:
-            json.dump(self.templates, f, ensure_ascii=False, indent=2)
+        try:
+            # 确保目录存在
+            templates_dir = os.path.dirname(self.templates_file)
+            if not os.path.exists(templates_dir):
+                os.makedirs(templates_dir, exist_ok=True)
+                
+            # 保存模板
+            with open(self.templates_file, 'w', encoding='utf-8') as f:
+                json.dump(self.templates, f, ensure_ascii=False, indent=2)
+            print(f"成功保存 {len(self.templates)} 个模板到 {self.templates_file}")
+        except Exception as e:
+            print(f"保存模板文件失败: {e}")
+            # 尝试保存到备用位置
+            try:
+                backup_file = os.path.join(PROJECT_ROOT, "data", "pattern_templates_backup.json")
+                with open(backup_file, 'w', encoding='utf-8') as f:
+                    json.dump(self.templates, f, ensure_ascii=False, indent=2)
+                print(f"已保存模板到备用文件: {backup_file}")
+                # 更新模板文件路径
+                self.templates_file = backup_file
+            except Exception as backup_error:
+                print(f"保存到备用位置也失败: {backup_error}")
     
     def get_templates(self):
         """获取所有形态模板"""

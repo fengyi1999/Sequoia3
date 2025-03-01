@@ -15,101 +15,117 @@ import plotly.graph_objects as go
 import plotly.express as px
 from pathlib import Path
 
-# 检查是否使用模拟服务
-from stock_pattern_system.ui.pages.mock_services import normalize_series
+# 根据环境变量决定使用真实服务还是模拟服务
+USE_MOCK_SERVICES = os.environ.get("USE_MOCK_SERVICES", "0") == "1"
 
-# 使用模拟服务，而不是实际服务
-# from stock_pattern_system.app.services.dtw_matcher import DTWMatcher
-# from stock_pattern_system.app.services.dtw_param_tuner import DTWParamTuner, generate_test_data
-# from stock_pattern_system.app.services.pattern_templates import PatternTemplateManager
-
-# 创建一个简单的DTW参数调谐器，用于演示
-class SimpleDTWParamTuner:
-    """简单的DTW参数调谐器"""
-    
-    def __init__(self):
-        """初始化调谐器"""
-        pass
-    
-    def generate_test_data(self, data_type, length=50, noise_level=0.1):
-        """生成测试数据"""
-        x = np.linspace(0, 1, length)
+if USE_MOCK_SERVICES:
+    # 使用模拟服务
+    from stock_pattern_system.ui.pages.mock_services import normalize_series
+    # 创建一个简单的DTW参数调谐器，用于演示
+    class SimpleDTWParamTuner:
+        """简单的DTW参数调谐器"""
         
-        if data_type == 'sine':
-            # 简单的正弦波
-            pattern = np.sin(2 * np.pi * x)
-        elif data_type == 'head_and_shoulders_top':
-            # 头肩顶形态
-            pattern = np.zeros(length)
-            left_shoulder_idx = int(length * 0.2)
-            pattern[:left_shoulder_idx] = np.sin(np.linspace(0, np.pi, left_shoulder_idx)) * 0.7
-            head_start = left_shoulder_idx
-            head_end = int(length * 0.6)
-            pattern[head_start:head_end] = np.sin(np.linspace(0, np.pi, head_end - head_start)) * 1.0
-            right_shoulder_idx = head_end
-            pattern[right_shoulder_idx:] = np.sin(np.linspace(0, np.pi, length - right_shoulder_idx)) * 0.7
-        elif data_type == 'double_bottom':
-            # 双底形态
-            pattern = 1 - np.sin(2 * np.pi * x)
-        elif data_type == 'random':
-            # 随机波动
-            pattern = np.random.randn(length)
-        else:
-            pattern = np.zeros(length)
+        def __init__(self):
+            """初始化简单的DTW参数调谐器"""
+            pass
         
-        # 添加噪声
-        if noise_level > 0:
+        def generate_test_data(self, data_type, length=50, noise_level=0.1):
+            """生成测试数据"""
+            # 生成基础模式
+            if data_type == "sine":
+                x = np.linspace(0, 4*np.pi, length)
+                template = np.sin(x)
+            elif data_type == "triangle":
+                x = np.linspace(0, 1, length)
+                template = np.abs(2 * (x - 0.5))
+            elif data_type == "square":
+                x = np.linspace(0, 1, length)
+                template = np.zeros(length)
+                template[x < 0.5] = 0
+                template[x >= 0.5] = 1
+            else:  # random
+                template = np.random.random(length)
+            
+            # 添加噪声生成测试模式
             noise = np.random.normal(0, noise_level, length)
-            pattern += noise
+            test = template + noise
+            
+            # 归一化
+            template = (template - np.min(template)) / (np.max(template) - np.min(template))
+            test = (test - np.min(test)) / (np.max(test) - np.min(test))
+            
+            return {
+                "template": template.tolist(),
+                "test": test.tolist(),
+                "data_type": data_type,
+                "length": length,
+                "noise_level": noise_level
+            }
         
-        # 归一化
-        pattern = normalize_series(pattern)
-        return pattern
+        def test_parameters(self, template_pattern, test_pattern, window=None, use_fast_dtw=True, 
+                          distance_metric='euclidean', early_stopping=False, early_stopping_threshold=0.5):
+            """测试DTW参数组合"""
+            # 模拟DTW计算
+            import time
+            import random
+            
+            # 转换为numpy数组
+            template = np.array(template_pattern)
+            test = np.array(test_pattern)
+            
+            # 模拟计算时间
+            start_time = time.time()
+            # 根据参数模拟不同的计算时间
+            delay = 0.1
+            if use_fast_dtw:
+                delay *= 0.5
+            if window is not None:
+                delay *= (0.5 + 0.5 * window / 100)
+            if early_stopping:
+                delay *= 0.7
+            
+            time.sleep(delay)
+            computation_time = time.time() - start_time
+            
+            # 模拟相似度计算
+            # 基础相似度取决于噪声水平
+            base_similarity = 1.0 - random.uniform(0, 0.3)
+            # 参数影响
+            if use_fast_dtw:
+                base_similarity *= 0.95  # 快速DTW略微降低精度
+            if window is not None:
+                base_similarity *= (0.9 + 0.1 * window / 100)  # 窗口越大，精度越高
+            
+            # 确保相似度在[0,1]范围内
+            similarity = max(0, min(1, base_similarity))
+            
+            # 生成随机的warping path
+            path_length = min(len(template), len(test))
+            path = [(i, int(i * len(test) / len(template) + random.uniform(-2, 2))) for i in range(len(template))]
+            path = [(i, max(0, min(len(test)-1, j))) for i, j in path]  # 确保索引在有效范围内
+            
+            # 模拟缓存命中率
+            cache_hit_rate = random.uniform(0.5, 0.9) if use_fast_dtw else 0
+            
+            return {
+                "similarity": similarity,
+                "computation_time": computation_time,
+                "path": path,
+                "cache_hit_rate": cache_hit_rate
+            }
     
-    def test_parameters(self, template_pattern, test_pattern, window=None, use_fast_dtw=True, 
-                      distance_metric='euclidean', early_stopping=False, early_stopping_threshold=0.5):
-        """测试DTW参数的效果"""
-        # 模拟计算DTW距离
-        # 在实际应用中，这里应该调用实际的DTW实现
-        
-        # 创建示例变形路径 - 在实际应用中应计算真实路径
-        path_length = min(len(template_pattern), len(test_pattern))
-        path = []
-        for i in range(path_length):
-            # 简单的对角线路径，实际DTW路径会更复杂
-            path.append((i, i))
-        
-        # 根据窗口大小调整相似度
-        if window is not None and window != "None":
-            # 假设较小的窗口会导致更快但可能不太准确的结果
-            window_size = int(window)
-            similarity = 0.8 + 0.1 * np.random.random() - 0.05 * window_size / path_length
-        else:
-            # 无窗口限制，理论上更准确但更慢
-            similarity = 0.9 + 0.1 * np.random.random()
-        
-        # 模拟计算时间
-        # 在实际应用中应测量真实计算时间
-        if use_fast_dtw == "True":
-            computation_time = 0.2 + 0.1 * np.random.random()  # 快速DTW更快
-        else:
-            computation_time = 0.5 + 0.3 * np.random.random()  # 标准DTW更慢
-        
-        # 应用提前终止的影响
-        if early_stopping == "True":
-            # 提前终止可能导致稍快的时间但可能影响准确性
-            computation_time *= 0.8
-            if np.random.random() < 0.3:  # 30%的概率略微降低准确性
-                similarity *= 0.95
-        
-        return {
-            'similarity': similarity,
-            'computation_time': computation_time,
-            'path': path
-        }
-
-# 创建调谐器实例
-param_tuner = SimpleDTWParamTuner()
+    # 使用模拟服务
+    param_tuner = SimpleDTWParamTuner()
+    print("参数调优页面：使用模拟服务")
+else:
+    # 使用真实服务
+    from stock_pattern_system.app.services.dtw_matcher import DTWMatcher
+    from stock_pattern_system.app.services.dtw_param_tuner import DTWParamTuner, generate_test_data
+    from stock_pattern_system.app.services.pattern_templates import normalize_pattern as normalize_series
+    
+    # 使用真实服务
+    param_tuner = DTWParamTuner()
+    print("参数调优页面：使用真实服务")
 
 def create_param_tuning_layout():
     """创建参数调优页面布局"""

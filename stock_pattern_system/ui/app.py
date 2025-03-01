@@ -20,33 +20,33 @@ print(f"使用模拟服务: {'是' if USE_MOCK_SERVICES else '否'}")
 # 尝试使用相对导入
 try:
     # 导入页面和组件
-    from components.navbar import create_navbar
-    from components.footer import create_footer
-    from components.sidebar import create_sidebar
+    from stock_pattern_system.ui.components.navbar import create_navbar
+    from stock_pattern_system.ui.components.footer import create_footer
+    from stock_pattern_system.ui.components.sidebar import create_sidebar
 
     # 导入页面
-    from pages.home import create_home_layout
-    from pages.pattern_matching import create_pattern_matching_layout
-    from pages.param_tuning import create_param_tuning_layout
-    from pages.template_management import create_template_management_layout
+    from stock_pattern_system.ui.pages.home import create_home_layout
+    from stock_pattern_system.ui.pages.pattern_matching import create_pattern_matching_layout
+    from stock_pattern_system.ui.pages.param_tuning import create_param_tuning_layout
+    from stock_pattern_system.ui.pages.template_management import create_template_management_layout
 except ImportError:
-    # 如果相对导入失败，尝试使用绝对导入
+    # 如果相对导入失败，尝试使用相对导入
     try:
         # 将项目根目录添加到Python路径
         project_root = str(Path(__file__).parent.parent.parent)
         if project_root not in sys.path:
             sys.path.insert(0, project_root)
 
-        # 导入页面和组件
-        from stock_pattern_system.ui.components.navbar import create_navbar
-        from stock_pattern_system.ui.components.footer import create_footer
-        from stock_pattern_system.ui.components.sidebar import create_sidebar
+        # 尝试直接从ui子目录导入
+        from ui.components.navbar import create_navbar
+        from ui.components.footer import create_footer
+        from ui.components.sidebar import create_sidebar
 
         # 导入页面
-        from stock_pattern_system.ui.pages.home import create_home_layout
-        from stock_pattern_system.ui.pages.pattern_matching import create_pattern_matching_layout
-        from stock_pattern_system.ui.pages.param_tuning import create_param_tuning_layout
-        from stock_pattern_system.ui.pages.template_management import create_template_management_layout
+        from ui.pages.home import create_home_layout
+        from ui.pages.pattern_matching import create_pattern_matching_layout
+        from ui.pages.param_tuning import create_param_tuning_layout
+        from ui.pages.template_management import create_template_management_layout
     except ImportError as e:
         print(f"导入错误: {e}")
         print("请确保您在正确的目录中运行此脚本")
